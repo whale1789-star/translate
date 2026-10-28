@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>即時語音翻譯字幕</title>
+    <style>
+        body {
+            background-color: #00ff00; /* 綠幕背景，方便 OBS 去背 */
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+        .controls {
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        button {
+            padding: 8px 16px;
+            font-size: 16px;
+            cursor: pointer;
+            border: none;
+            border-radius: 4px;
+            background-color: #4CAF50;
+            color: white;
+            font-weight: bold;
+        }
+        button:hover { background-color: #45a049; }
+        #stopBtn { background-color: #f44336; }
+        #stopBtn:hover { background-color: #da190b; }
+        select {
+            padding: 8px;
+            font-size: 16px;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        .subtitle-container {
+            margin-top: auto;
+            margin-bottom: 40px;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+        .text-box {
+            background-color: rgba(0, 0, 0, 0.75);
+            color: #ffffff;
+            padding: 12px 24px;
+            border-radius: 10px;
+            max-width: 90%;
+            text-align: center;
+            line-height: 1.5;
+            word-wrap: break-word;
+            display: none; /* 預設隱藏，有字才顯示黑色底框 */
+            box-shadow: 2px 2px 5px rgba(0,0,0,0.5);
+        }
+        #originalText { font-size: 28px; color: #e0e0e0; }
+        #translatedText { font-size: 44px; font-weight: bold; color: #f1c40f; }
+        #status { font-weight: bold; color: #ffeb3b; }
+    </style>
+</head>
+<body>
+
+    <!-- 頂部控制面板 -->
+    <div class="controls">
+        <button id="startBtn">開始收音</button>
+        <button id="stopBtn">停止</button>
+        
+        <label>辨識語言：</label>
+        <select id="sourceLang">
+            <option value="zh-TW" selected>繁體中文</option>
+            <option value="en-US">英文</option>
+            <option value="ja-JP">日文</option>
+        </select>
+
+        <label>翻譯成：</label>
+        <select id="targetLang">
+            <option value="en" selected>英文</option>
+            <option value="zh-TW">繁體中文</option>
+            <option value="ja">日文</option>
+            <option value="ko">韓文</option>
+            <option value="vi">越南文</option>
+            <option value="id">印尼文</option>
+        </select>
+
+        <span id="status">狀態：等待中...</span>
+    </div>
+
+    <!-- 底部字幕顯示區 -->
+    <div class="subtitle-container">
+        <div class="text-box" id="originalText"></div>
+        <div class="text-box" id="translatedText"></div>
+    </div>
+
+    <script>
+        // 檢查瀏覽器支援度
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            alert("您的瀏覽器不支援 Web Speech API，請使用 Google Chrome 桌面版。");
+        }
+
+        const recognition = new SpeechRecognition();
+        recognition.continuous = true;     // 連續收音
+        recognition.interimResults = true; // 允許輸出即時草稿
+
+        // 綁定 DOM 元素
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const sourceLangSelect = document.getElementById('sourceLang');
+        const targetLangSelect = document.getElementById('targetLang');
+        const originalTextDiv = document.getElementById('originalText');
+        const translatedTextDiv = document.getElementById('translatedText');
+        const statusSpan = document.getElementById('status');
+
+        // 填入你的專屬 Google Apps Script API 網址
+        const GAS_API_URL = "https://script.google.com/macros/s/AKfycbz4X76EsKgwLf452Yh8sI6QWQPOkFSxaj7k5Ezm-cK8j4rWz9Il8vLSCB9ddDw7UZPo/exec";
+
+        let isManuallyStopped = true;
+
+        // --- 語音辨識事件設定 ---
+        recognition.onstart = function() {
+            statusSpan.innerText = '狀態：收音中 🔴';
+            isManuallyStopped = false;
+        };
+
+        recognition.onerror = function(event) {
+            console.error("辨識錯誤: ", event.error);
+            if (event.error === 'not-allowed') {
+                statusSpan.innerText = '狀態：請允許麥克風權限';
+                isManuallyStopped = true;
+            }
+        };
+
+        recognition.onend = function() {
+            // 如果不是被手動停止的，就自動重新啟動 (解決 Chrome 閒置幾秒後會自動斷開的問題)
+            if (!isManuallyStopped) {
+                recognition.start();
+            } else {
+                statusSpan.innerText = '狀態：已停止 ⚪';
+            }
+        };
+
+        recognition.onresult = function(event) {
+            let interimTranscript = '';
+            let newlyFinalized = '';
+
+            // 整理即時語音與已確認的語音字串
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                if (event.results[i].isFinal) {
+                    newlyFinalized += event.results[i][0].transcript;
+                } else {
+                    interimTranscript += event.results[i][0].transcript;
+                }
+            }
+
+            const currentText = newlyFinalized || interimTranscript;
+            
+            // 將字串顯示在畫面上
+            if (currentText) {
+                originalTextDiv.style.display = 'inline-block';
+                originalTextDiv.innerText = currentText;
+            }
+
+            // 當一句話確定結束時，送出翻譯請求
+            if (newlyFinalized.trim() !== '') {
+                translatedTextDiv.style.display = 'inline-block';
+                translatedTextDiv.innerText = "...翻譯中..."; // 顯示讀取中狀態
+                translateText(newlyFinalized, sourceLangSelect.value, targetLangSelect.value);
+            }
+        };
+
+        // --- 呼叫 GAS 翻譯 API ---
+        async function translateText(text, sourceLang, targetLang) {
+            // 將 zh-TW 或 en-US 轉為 Google Translate API 偏好的簡碼 (例如 zh-TW 不變，en-US 取 en)
+            let gasSourceLang = sourceLang === 'zh-TW' ? 'zh-TW' : sourceLang.split('-')[0];
+            
+            try {
+                const response = await fetch(GAS_API_URL, {
+                    method: 'POST',
+                    // 重要：使用 text/plain 可避免瀏覽器發出 CORS preflight (OPTIONS) 請求而導致阻擋
+                    headers: {
+                        'Content-Type': 'text/plain;charset=utf-8', 
+                    },
+                    body: JSON.stringify({
+                        text: text,
+                        sourceLang: gasSourceLang,
+                        targetLang: targetLang
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.status === "success") {
+                    translatedTextDiv.innerText = data.translatedText;
+                } else {
+                    console.error('翻譯失敗:', data.message);
+                    translatedTextDiv.innerText = "[翻譯發生錯誤]";
+                }
+            } catch (error) {
+                console.error('連線失敗:', error);
+                translatedTextDiv.innerText = "[API 連線失敗]";
+            }
+        }
+
+        // --- 按鈕監聽事件 ---
+        startBtn.addEventListener('click', () => {
+            recognition.lang = sourceLangSelect.value;
+            originalTextDiv.innerText = "";
+            translatedTextDiv.innerText = "";
+            originalTextDiv.style.display = "none";
+            translatedTextDiv.style.display = "none";
+            recognition.start();
+        });
+
+        stopBtn.addEventListener('click', () => {
+            isManuallyStopped = true;
+            recognition.stop();
+        });
+    </script>
+</body>
+</html>
